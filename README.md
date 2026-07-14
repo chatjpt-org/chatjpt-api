@@ -1,8 +1,9 @@
 # ChatJPT API
 
 Backend Go do ChatJPT. Esta primeira fatia fornece PostgreSQL, migrations,
-criação administrativa de usuários, login, logout e sessão por cookie. Chat,
-conversas e integração com o gateway de IA ainda não fazem parte da API.
+criação administrativa de usuários, login, logout, sessão por cookie e CRUD de
+conversas. O envio ao modelo e a integração com o gateway de IA ainda não fazem
+parte da API.
 
 ## Segurança atual
 
@@ -20,6 +21,12 @@ conversas e integração com o gateway de IA ainda não fazem parte da API.
 | `POST` | `/v1/auth/login` | Cria sessão a partir de usuário e senha |
 | `POST` | `/v1/auth/logout` | Revoga a sessão atual |
 | `GET` | `/v1/auth/session` | Retorna o usuário da sessão atual |
+| `GET` | `/v1/conversations` | Lista as conversas do usuário atual |
+| `POST` | `/v1/conversations` | Cria uma conversa |
+| `GET` | `/v1/conversations/{id}` | Obtém uma conversa do usuário atual |
+| `PATCH` | `/v1/conversations/{id}` | Renomeia uma conversa |
+| `DELETE` | `/v1/conversations/{id}` | Remove uma conversa |
+| `GET` | `/v1/conversations/{id}/messages` | Lista mensagens de uma conversa |
 
 ## Desenvolvimento
 

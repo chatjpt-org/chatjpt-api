@@ -36,6 +36,24 @@ type userResponse struct {
 	Username string `json:"username"`
 }
 
+type conversationRequest struct {
+	Title string `json:"title"`
+}
+
+type conversationResponse struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type messageResponse struct {
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type apiError struct {
 	Error errorBody `json:"error"`
 }
@@ -67,6 +85,14 @@ func (s *Server) routes() http.Handler {
 		router.Post("/login", s.login)
 		router.Post("/logout", s.logout)
 		router.Get("/session", s.session)
+	})
+	router.Route("/v1/conversations", func(router chi.Router) {
+		router.Get("/", s.listConversations)
+		router.Post("/", s.createConversation)
+		router.Get("/{conversationID}", s.getConversation)
+		router.Patch("/{conversationID}", s.renameConversation)
+		router.Delete("/{conversationID}", s.deleteConversation)
+		router.Get("/{conversationID}/messages", s.listMessages)
 	})
 	return router
 }
@@ -141,6 +167,121 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username})
 }
 
+func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.authenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	conversations, err := s.store.ListConversations(r.Context(), user.ID)
+	if err != nil {
+		s.logger.Error("list conversations", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list conversations", "server_error")
+		return
+	}
+	responses := make([]conversationResponse, 0, len(conversations))
+	for _, conversation := range conversations {
+		responses = append(responses, conversationToResponse(conversation))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": responses})
+}
+
+func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.authenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request conversationRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	title, err := conversationTitle(request.Title)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+
+	conversation, err := s.store.CreateConversation(r.Context(), user.ID, title)
+	if err != nil {
+		s.logger.Error("create conversation", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not create conversation", "server_error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, conversationToResponse(conversation))
+}
+
+func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
+	user, conversationID, ok := s.authenticatedConversation(w, r)
+	if !ok {
+		return
+	}
+	conversation, err := s.store.FindConversation(r.Context(), user.ID, conversationID)
+	if err != nil {
+		s.writeConversationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conversationToResponse(conversation))
+}
+
+func (s *Server) renameConversation(w http.ResponseWriter, r *http.Request) {
+	user, conversationID, ok := s.authenticatedConversation(w, r)
+	if !ok {
+		return
+	}
+	var request conversationRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	title, err := conversationTitle(request.Title)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+
+	conversation, err := s.store.RenameConversation(r.Context(), user.ID, conversationID, title)
+	if err != nil {
+		s.writeConversationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conversationToResponse(conversation))
+}
+
+func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
+	user, conversationID, ok := s.authenticatedConversation(w, r)
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteConversation(r.Context(), user.ID, conversationID); err != nil {
+		s.writeConversationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
+	user, conversationID, ok := s.authenticatedConversation(w, r)
+	if !ok {
+		return
+	}
+	messages, err := s.store.ListMessages(r.Context(), user.ID, conversationID)
+	if err != nil {
+		s.logger.Error("list messages", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list messages", "server_error")
+		return
+	}
+	responses := make([]messageResponse, 0, len(messages))
+	for _, message := range messages {
+		responses = append(responses, messageResponse{
+			ID:        message.ID,
+			Role:      message.Role,
+			Content:   message.Content,
+			CreatedAt: message.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": responses})
+}
+
 func (s *Server) authenticatedUser(w http.ResponseWriter, r *http.Request) (store.User, bool) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil || cookie.Value == "" {
@@ -157,6 +298,66 @@ func (s *Server) authenticatedUser(w http.ResponseWriter, r *http.Request) (stor
 		return store.User{}, false
 	}
 	return user, true
+}
+
+func (s *Server) authenticatedConversation(w http.ResponseWriter, r *http.Request) (store.User, string, bool) {
+	user, ok := s.authenticatedUser(w, r)
+	if !ok {
+		return store.User{}, "", false
+	}
+	conversationID := chi.URLParam(r, "conversationID")
+	if !isUUID(conversationID) {
+		writeError(w, http.StatusBadRequest, "conversation ID must be a UUID", "invalid_request")
+		return store.User{}, "", false
+	}
+	return user, conversationID, true
+}
+
+func (s *Server) writeConversationError(w http.ResponseWriter, err error) {
+	if store.IsNotFound(err) {
+		writeError(w, http.StatusNotFound, "conversation not found", "not_found")
+		return
+	}
+	s.logger.Error("conversation operation", "error", err)
+	writeError(w, http.StatusInternalServerError, "could not complete conversation operation", "server_error")
+}
+
+func conversationTitle(value string) (string, error) {
+	title := strings.TrimSpace(value)
+	if title == "" {
+		return "Nova conversa", nil
+	}
+	if len(title) > 200 {
+		return "", errors.New("title must contain at most 200 characters")
+	}
+	return title, nil
+}
+
+func conversationToResponse(conversation store.Conversation) conversationResponse {
+	return conversationResponse{
+		ID:        conversation.ID,
+		Title:     conversation.Title,
+		CreatedAt: conversation.CreatedAt,
+		UpdatedAt: conversation.UpdatedAt,
+	}
+}
+
+func isUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func passwordMatches(encodedHash, password string) bool {
