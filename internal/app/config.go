@@ -14,6 +14,9 @@ type Config struct {
 	DatabaseURL     string
 	CookieSecure    bool
 	SessionDuration time.Duration
+	GatewayURL      string
+	GatewayAccessID string
+	GatewaySecret   string
 }
 
 func LoadConfig() (Config, error) {
@@ -32,6 +35,9 @@ func LoadConfig() (Config, error) {
 		DatabaseURL:     databaseURL,
 		CookieSecure:    cookieSecure,
 		SessionDuration: 7 * 24 * time.Hour,
+		GatewayURL:      environmentOr("JCHAT_GATEWAY_URL", ""),
+		GatewayAccessID: environmentOr("JCHAT_GATEWAY_ACCESS_ID", ""),
+		GatewaySecret:   environmentOr("JCHAT_GATEWAY_ACCESS_SECRET", ""),
 	}, nil
 }
 

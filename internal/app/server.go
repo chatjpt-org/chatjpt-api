@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chatjpt-org/chatjpt-api/internal/auth"
+	"github.com/chatjpt-org/chatjpt-api/internal/gateway"
 	"github.com/chatjpt-org/chatjpt-api/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -25,6 +26,7 @@ type Server struct {
 	store        *store.Store
 	logger       *slog.Logger
 	loginLimiter *loginLimiter
+	gateway      *gateway.Client
 }
 
 type loginRequest struct {
@@ -65,11 +67,16 @@ type errorBody struct {
 }
 
 func NewServer(config Config, store *store.Store, logger *slog.Logger) *Server {
+	var client *gateway.Client
+	if config.GatewayURL != "" && config.GatewayAccessID != "" && config.GatewaySecret != "" {
+		client, _ = gateway.New(config.GatewayURL, config.GatewayAccessID, config.GatewaySecret, nil)
+	}
 	return &Server{
 		config:       config,
 		store:        store,
 		logger:       logger,
 		loginLimiter: newLoginLimiter(),
+		gateway:      client,
 	}
 }
 
@@ -99,8 +106,19 @@ func (s *Server) routes() http.Handler {
 		router.Patch("/{conversationID}", s.renameConversation)
 		router.Delete("/{conversationID}", s.deleteConversation)
 		router.Get("/{conversationID}/messages", s.listMessages)
+		router.Post("/{conversationID}/messages", s.createMessage)
 	})
 	return router
+}
+
+type createMessageRequest struct {
+	Content   string `json:"content"`
+	MaxTokens int    `json:"max_tokens"`
+}
+
+type streamEvent struct {
+	Delta        string `json:"delta,omitempty"`
+	FinishReason string `json:"finish_reason,omitempty"`
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +320,84 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": responses})
 }
 
+func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
+	user, conversationID, ok := s.authenticatedConversation(w, r)
+	if !ok {
+		return
+	}
+	if s.gateway == nil {
+		writeError(w, http.StatusServiceUnavailable, "AI gateway is not configured", "service_unavailable")
+		return
+	}
+
+	var request createMessageRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	request.Content = strings.TrimSpace(request.Content)
+	if request.Content == "" {
+		writeError(w, http.StatusBadRequest, "message content is required", "invalid_request")
+		return
+	}
+	if request.MaxTokens == 0 {
+		request.MaxTokens = 512
+	}
+	if request.MaxTokens < 1 || request.MaxTokens > 1024 {
+		writeError(w, http.StatusBadRequest, "max_tokens must be between 1 and 1024", "invalid_request")
+		return
+	}
+	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "user", request.Content); err != nil {
+		s.writeConversationError(w, err)
+		return
+	}
+	messages, err := s.store.ListMessages(r.Context(), user.ID, conversationID)
+	if err != nil {
+		s.logger.Error("list messages for generation", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not start generation", "server_error")
+		return
+	}
+	gatewayMessages := make([]gateway.Message, 0, len(messages))
+	for _, message := range messages {
+		gatewayMessages = append(gatewayMessages, gateway.Message{Role: message.Role, Content: message.Content})
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is not supported", "server_error")
+		return
+	}
+	var answer strings.Builder
+	err = s.gateway.Stream(r.Context(), gateway.ChatRequest{
+		Model:     "qwen2.5:1.5b-instruct",
+		Messages:  gatewayMessages,
+		MaxTokens: request.MaxTokens,
+		UserID:    user.ID,
+	}, func(chunk gateway.Chunk) error {
+		answer.WriteString(chunk.Content)
+		if err := writeSSE(w, streamEvent{Delta: chunk.Content, FinishReason: chunk.FinishReason}); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+	if err != nil {
+		s.logger.Warn("gateway generation failed", "error", err)
+		_ = writeSSE(w, apiError{Error: errorBody{Message: "generation failed", Code: "gateway_error"}})
+		flusher.Flush()
+		return
+	}
+	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "assistant", answer.String()); err != nil {
+		s.logger.Error("persist assistant message", "error", err)
+		_ = writeSSE(w, apiError{Error: errorBody{Message: "could not save assistant response", Code: "server_error"}})
+		flusher.Flush()
+		return
+	}
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	flusher.Flush()
+}
+
 func (s *Server) authenticatedUser(w http.ResponseWriter, r *http.Request) (store.User, bool) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil || cookie.Value == "" {
@@ -432,4 +528,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message, code string) {
 	writeJSON(w, status, apiError{Error: errorBody{Message: message, Code: code}})
+}
+
+func writeSSE(w http.ResponseWriter, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("data: " + string(payload) + "\n\n"))
+	return err
 }

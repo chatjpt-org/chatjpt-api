@@ -35,6 +35,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       JCHAT_API_ADDR: :8080
       JCHAT_COOKIE_SECURE: "true"
+      JCHAT_GATEWAY_URL: ${JCHAT_GATEWAY_URL}
+      JCHAT_GATEWAY_ACCESS_ID: ${JCHAT_GATEWAY_ACCESS_ID}
+      JCHAT_GATEWAY_ACCESS_SECRET: ${JCHAT_GATEWAY_ACCESS_SECRET}
     depends_on:
       migrate:
         condition: service_completed_successfully

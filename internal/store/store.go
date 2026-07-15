@@ -221,6 +221,37 @@ func (s *Store) ListMessages(ctx context.Context, userID, conversationID string)
 	return messages, nil
 }
 
+func (s *Store) CreateMessage(ctx context.Context, userID, conversationID, role, content string) (Message, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Message{}, fmt.Errorf("begin create message: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var message Message
+	err = tx.QueryRow(ctx, `
+		INSERT INTO messages (conversation_id, role, content)
+		SELECT id, $3, $4
+		FROM conversations
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, role, content, created_at`, conversationID, userID, role, content).Scan(
+		&message.ID,
+		&message.Role,
+		&message.Content,
+		&message.CreatedAt,
+	)
+	if err != nil {
+		return Message{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, conversationID); err != nil {
+		return Message{}, fmt.Errorf("touch conversation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, fmt.Errorf("commit create message: %w", err)
+	}
+	return message, nil
+}
+
 func ApplyMigrations(ctx context.Context, store *Store) error {
 	files, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
