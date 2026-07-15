@@ -97,6 +97,7 @@ func (s *Server) Serve() error {
 
 func (s *Server) routes() http.Handler {
 	router := chi.NewRouter()
+	router.Use(securityHeaders)
 	router.Get("/healthz", s.health)
 	router.Route("/v1/auth", func(router chi.Router) {
 		router.Post("/login", s.login)
@@ -113,6 +114,15 @@ func (s *Server) routes() http.Handler {
 		router.Post("/{conversationID}/messages", s.createMessage)
 	})
 	return router
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type createMessageRequest struct {
