@@ -21,9 +21,10 @@ const (
 )
 
 type Server struct {
-	config Config
-	store  *store.Store
-	logger *slog.Logger
+	config       Config
+	store        *store.Store
+	logger       *slog.Logger
+	loginLimiter *loginLimiter
 }
 
 type loginRequest struct {
@@ -64,7 +65,12 @@ type errorBody struct {
 }
 
 func NewServer(config Config, store *store.Store, logger *slog.Logger) *Server {
-	return &Server{config: config, store: store, logger: logger}
+	return &Server{
+		config:       config,
+		store:        store,
+		logger:       logger,
+		loginLimiter: newLoginLimiter(),
+	}
 }
 
 func (s *Server) Serve() error {
@@ -118,15 +124,29 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required", "invalid_request")
 		return
 	}
+	loginKey := loginAttemptKey(r.RemoteAddr, request.Username)
+	if s.loginLimiter.isBlocked(loginKey) {
+		writeError(w, http.StatusTooManyRequests, "too many failed login attempts; try again later", "too_many_login_attempts")
+		return
+	}
 
 	user, passwordHash, err := s.store.FindUserByUsername(r.Context(), request.Username)
-	if err != nil || !passwordMatches(passwordHash, request.Password) {
-		if err != nil && !store.IsNotFound(err) {
+	if err != nil {
+		if !store.IsNotFound(err) {
 			s.logger.Error("find user during login", "error", err)
+			writeError(w, http.StatusInternalServerError, "could not sign in", "server_error")
+			return
 		}
+		s.loginLimiter.recordFailure(loginKey)
 		writeError(w, http.StatusUnauthorized, "invalid username or password", "invalid_credentials")
 		return
 	}
+	if !passwordMatches(passwordHash, request.Password) {
+		s.loginLimiter.recordFailure(loginKey)
+		writeError(w, http.StatusUnauthorized, "invalid username or password", "invalid_credentials")
+		return
+	}
+	s.loginLimiter.reset(loginKey)
 
 	token, tokenHash, err := auth.NewSessionToken()
 	if err != nil {
