@@ -12,6 +12,22 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: chatjpt_test
+          POSTGRES_USER: chatjpt_test
+          POSTGRES_PASSWORD: chatjpt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chatjpt_test -d chatjpt_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://chatjpt_test:chatjpt_test@localhost:5432/chatjpt_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
