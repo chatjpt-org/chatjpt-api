@@ -1,0 +1,61 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatjpt-api-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Load deploy key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.KVM2_DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
+          sudo install -m 0755 "$RUNNER_TEMP/cloudflared" /usr/local/bin/cloudflared
+
+      - name: Configure SSH through Cloudflare Tunnel
+        run: |
+          mkdir -p ~/.ssh
+          cat >> ~/.ssh/config <<'EOF'
+          Host 187.127.34.186
+            User root
+            ProxyCommand cloudflared access ssh --hostname ssh.devarthur.com.br
+            StrictHostKeyChecking accept-new
+          EOF
+
+      - name: Deploy API
+        run: |
+          ssh root@187.127.34.186 '
+            set -eu
+            if [ ! -d /opt/chatjpt-api/.git ]; then
+              git clone https://github.com/chatjpt-org/chatjpt-api.git /opt/chatjpt-api
+            fi
+            cd /opt/chatjpt-api
+            git fetch origin main
+            git reset --hard origin/main
+            docker network inspect jchat >/dev/null 2>&1 || docker network create jchat
+            docker compose up -d --build
+            docker compose ps
+            for attempt in $(seq 1 12); do
+              if docker compose exec -T api wget -qO- http://127.0.0.1:8080/healthz; then
+                exit 0
+              fi
+              sleep 5
+            done
+            exit 1
+          '

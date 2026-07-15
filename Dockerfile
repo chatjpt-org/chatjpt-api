@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates wget \
     && addgroup -S chatjpt \
     && adduser -S -G chatjpt -h /nonexistent -s /sbin/nologin chatjpt
 

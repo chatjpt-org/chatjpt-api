@@ -37,3 +37,5 @@ jobs:
         run: docker compose --env-file infra/.env.example config --quiet
       - name: Build API image
         run: docker build --tag chatjpt-api:ci .
+      - name: Verify API image health-check utility
+        run: docker run --rm --entrypoint wget chatjpt-api:ci --version
