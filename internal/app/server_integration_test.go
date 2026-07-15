@@ -61,8 +61,22 @@ func TestServerIntegration(t *testing.T) {
 			t.Errorf("decode gateway request: %v", err)
 			return
 		}
-		if len(request.Messages) != 1 || request.Messages[0].Role != "user" || request.Messages[0].Content != "hello" {
+		if len(request.Messages) == 0 {
 			t.Errorf("gateway messages = %#v", request.Messages)
+			return
+		}
+		lastMessage := request.Messages[len(request.Messages)-1]
+		if lastMessage.Role != "user" {
+			t.Errorf("last gateway message = %#v, want user", lastMessage)
+			return
+		}
+		if lastMessage.Content == "please queue" {
+			http.Error(w, "queue full", http.StatusTooManyRequests)
+			return
+		}
+		if len(request.Messages) != 1 || lastMessage.Content != "hello" {
+			t.Errorf("gateway messages = %#v", request.Messages)
+			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello back\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
@@ -188,5 +202,44 @@ func TestServerIntegration(t *testing.T) {
 	}
 	if len(listed.Data) != 2 || listed.Data[0].Content != "hello" || listed.Data[1].Content != "hello back" {
 		t.Fatalf("messages response = %#v", listed.Data)
+	}
+
+	busyRequest, err := http.NewRequest(http.MethodPost, apiServer.URL+"/v1/conversations/"+conversation.ID+"/messages", strings.NewReader(`{"content":"please queue"}`))
+	if err != nil {
+		t.Fatalf("NewRequest(busy message) error = %v", err)
+	}
+	busyRequest.Header.Set("Content-Type", "application/json")
+	busyRequest.AddCookie(firstCookie)
+	busyResponse, err := apiServer.Client().Do(busyRequest)
+	if err != nil {
+		t.Fatalf("busy message request error = %v", err)
+	}
+	defer busyResponse.Body.Close()
+	busyStream, err := io.ReadAll(busyResponse.Body)
+	if err != nil {
+		t.Fatalf("read busy stream: %v", err)
+	}
+	if busyResponse.StatusCode != http.StatusOK || !strings.Contains(string(busyStream), `"code":"model_busy"`) {
+		t.Fatalf("busy response status = %d, stream = %q", busyResponse.StatusCode, busyStream)
+	}
+
+	messagesRequest, err = http.NewRequest(http.MethodGet, apiServer.URL+"/v1/conversations/"+conversation.ID+"/messages", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(messages after busy response) error = %v", err)
+	}
+	messagesRequest.AddCookie(firstCookie)
+	messagesResponse, err = apiServer.Client().Do(messagesRequest)
+	if err != nil {
+		t.Fatalf("messages after busy response request error = %v", err)
+	}
+	defer messagesResponse.Body.Close()
+	listed = struct {
+		Data []messageResponse `json:"data"`
+	}{}
+	if err := json.NewDecoder(messagesResponse.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode messages after busy response: %v", err)
+	}
+	if len(listed.Data) != 3 || listed.Data[2].Role != "user" || listed.Data[2].Content != "please queue" {
+		t.Fatalf("messages after busy response = %#v", listed.Data)
 	}
 }
