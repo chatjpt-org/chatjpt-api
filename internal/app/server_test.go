@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/chatjpt-org/chatjpt-api/internal/gateway"
@@ -37,5 +38,21 @@ func TestStreamErrorEvent(t *testing.T) {
 				t.Errorf("streamErrorEvent().Error.Code = %q, want %q", got, test.code)
 			}
 		})
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	handler := securityHeaders(http.NotFoundHandler())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+
+	for name, want := range map[string]string{
+		"Referrer-Policy":        "no-referrer",
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+	} {
+		if got := response.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 }
