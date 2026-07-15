@@ -66,10 +66,14 @@ type errorBody struct {
 	Code    string `json:"code"`
 }
 
-func NewServer(config Config, store *store.Store, logger *slog.Logger) *Server {
+func NewServer(config Config, store *store.Store, logger *slog.Logger) (*Server, error) {
 	var client *gateway.Client
 	if config.GatewayURL != "" && config.GatewayAccessID != "" && config.GatewaySecret != "" {
-		client, _ = gateway.New(config.GatewayURL, config.GatewayAccessID, config.GatewaySecret, nil)
+		var err error
+		client, err = gateway.New(config.GatewayURL, config.GatewayAccessID, config.GatewaySecret, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Server{
 		config:       config,
@@ -77,7 +81,7 @@ func NewServer(config Config, store *store.Store, logger *slog.Logger) *Server {
 		logger:       logger,
 		loginLimiter: newLoginLimiter(),
 		gateway:      client,
-	}
+	}, nil
 }
 
 func (s *Server) Serve() error {
@@ -384,7 +388,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logger.Warn("gateway generation failed", "error", err)
-		_ = writeSSE(w, apiError{Error: errorBody{Message: "generation failed", Code: "gateway_error"}})
+		_ = writeSSE(w, streamErrorEvent(err))
 		flusher.Flush()
 		return
 	}
@@ -396,6 +400,19 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
+}
+
+func streamErrorEvent(err error) apiError {
+	var responseError *gateway.ResponseError
+	if errors.As(err, &responseError) {
+		switch responseError.StatusCode {
+		case http.StatusTooManyRequests, http.StatusConflict:
+			return apiError{Error: errorBody{Message: "the AI model is busy; try again shortly", Code: "model_busy"}}
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return apiError{Error: errorBody{Message: "the AI gateway is temporarily unavailable", Code: "gateway_unavailable"}}
+		}
+	}
+	return apiError{Error: errorBody{Message: "generation failed", Code: "gateway_error"}}
 }
 
 func (s *Server) authenticatedUser(w http.ResponseWriter, r *http.Request) (store.User, bool) {
