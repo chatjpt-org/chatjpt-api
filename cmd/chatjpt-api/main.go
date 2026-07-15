@@ -38,7 +38,11 @@ func main() {
 
 	switch command {
 	case "serve":
-		server := app.NewServer(config, pool, logger)
+		server, err := app.NewServer(config, pool, logger)
+		if err != nil {
+			logger.Error("create server", "error", err)
+			os.Exit(1)
+		}
 		if err := server.Serve(); err != nil {
 			logger.Error("server stopped", "error", err)
 			os.Exit(1)

@@ -25,3 +25,25 @@ func TestLoadConfigRequiresDatabaseURL(t *testing.T) {
 		t.Fatal("LoadConfig() error = nil, want error")
 	}
 }
+
+func TestLoadConfigRequiresAllGatewayValues(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://jchat:test@localhost:5432/jchat")
+	t.Setenv("JCHAT_GATEWAY_URL", "https://ai.example.com")
+	t.Setenv("JCHAT_GATEWAY_ACCESS_ID", "client-id")
+	t.Setenv("JCHAT_GATEWAY_ACCESS_SECRET", "")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() error = nil, want error for partial gateway configuration")
+	}
+}
+
+func TestLoadConfigAcceptsCompleteGatewayValues(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://jchat:test@localhost:5432/jchat")
+	t.Setenv("JCHAT_GATEWAY_URL", "https://ai.example.com")
+	t.Setenv("JCHAT_GATEWAY_ACCESS_ID", "client-id")
+	t.Setenv("JCHAT_GATEWAY_ACCESS_SECRET", "client-secret")
+
+	if _, err := LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+}

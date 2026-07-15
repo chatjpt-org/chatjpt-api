@@ -30,7 +30,7 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
-	return Config{
+	config := Config{
 		Address:         environmentOr("JCHAT_API_ADDR", ":8080"),
 		DatabaseURL:     databaseURL,
 		CookieSecure:    cookieSecure,
@@ -38,7 +38,24 @@ func LoadConfig() (Config, error) {
 		GatewayURL:      environmentOr("JCHAT_GATEWAY_URL", ""),
 		GatewayAccessID: environmentOr("JCHAT_GATEWAY_ACCESS_ID", ""),
 		GatewaySecret:   environmentOr("JCHAT_GATEWAY_ACCESS_SECRET", ""),
-	}, nil
+	}
+	if err := config.validateGatewayCredentials(); err != nil {
+		return Config{}, err
+	}
+	return config, nil
+}
+
+func (c Config) validateGatewayCredentials() error {
+	configured := 0
+	for _, value := range []string{c.GatewayURL, c.GatewayAccessID, c.GatewaySecret} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured != 0 && configured != 3 {
+		return errors.New("JCHAT_GATEWAY_URL, JCHAT_GATEWAY_ACCESS_ID, and JCHAT_GATEWAY_ACCESS_SECRET must be configured together")
+	}
+	return nil
 }
 
 func environmentOr(name, fallback string) string {
