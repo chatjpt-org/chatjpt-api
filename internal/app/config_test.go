@@ -47,3 +47,10 @@ func TestLoadConfigAcceptsCompleteGatewayValues(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 }
+
+func TestModelListRejectsDuplicateModels(t *testing.T) {
+	_, err := modelList("qwen2.5:1.5b-instruct,qwen2.5:1.5b-instruct")
+	if err == nil {
+		t.Fatal("modelList() error = nil, want duplicate model error")
+	}
+}

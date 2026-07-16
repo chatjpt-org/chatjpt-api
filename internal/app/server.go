@@ -19,14 +19,17 @@ import (
 const (
 	cookieName      = "chatjpt_session"
 	maxRequestBytes = 1 << 20
+	defaultModel    = "qwen2.5:1.5b-instruct"
 )
 
 type Server struct {
-	config       Config
-	store        *store.Store
-	logger       *slog.Logger
-	loginLimiter *loginLimiter
-	gateway      *gateway.Client
+	config        Config
+	store         *store.Store
+	logger        *slog.Logger
+	loginLimiter  *loginLimiter
+	gateway       *gateway.Client
+	allowedModels map[string]struct{}
+	defaultModel  string
 }
 
 type loginRequest struct {
@@ -54,6 +57,7 @@ type messageResponse struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
+	Model     string    `json:"model,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -67,6 +71,14 @@ type errorBody struct {
 }
 
 func NewServer(config Config, store *store.Store, logger *slog.Logger) (*Server, error) {
+	if len(config.AllowedModels) == 0 {
+		config.AllowedModels = []string{defaultModel}
+	}
+	allowedModels := make(map[string]struct{}, len(config.AllowedModels))
+	for _, model := range config.AllowedModels {
+		allowedModels[model] = struct{}{}
+	}
+
 	var client *gateway.Client
 	if config.GatewayURL != "" && config.GatewayAccessID != "" && config.GatewaySecret != "" {
 		var err error
@@ -76,11 +88,13 @@ func NewServer(config Config, store *store.Store, logger *slog.Logger) (*Server,
 		}
 	}
 	return &Server{
-		config:       config,
-		store:        store,
-		logger:       logger,
-		loginLimiter: newLoginLimiter(),
-		gateway:      client,
+		config:        config,
+		store:         store,
+		logger:        logger,
+		loginLimiter:  newLoginLimiter(),
+		gateway:       client,
+		allowedModels: allowedModels,
+		defaultModel:  config.AllowedModels[0],
 	}, nil
 }
 
@@ -104,6 +118,7 @@ func (s *Server) routes() http.Handler {
 		router.Post("/logout", s.logout)
 		router.Get("/session", s.session)
 	})
+	router.Get("/v1/models", s.listModels)
 	router.Route("/v1/conversations", func(router chi.Router) {
 		router.Get("/", s.listConversations)
 		router.Post("/", s.createConversation)
@@ -127,6 +142,7 @@ func securityHeaders(next http.Handler) http.Handler {
 
 type createMessageRequest struct {
 	Content   string `json:"content"`
+	Model     string `json:"model"`
 	MaxTokens int    `json:"max_tokens"`
 }
 
@@ -328,10 +344,24 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 			ID:        message.ID,
 			Role:      message.Role,
 			Content:   message.Content,
+			Model:     message.Model,
 			CreatedAt: message.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": responses})
+}
+
+func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticatedUser(w, r); !ok {
+		return
+	}
+	models, err := s.availableModels(r.Context())
+	if err != nil {
+		s.logger.Warn("list gateway models", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
 func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
@@ -360,7 +390,25 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "max_tokens must be between 1 and 1024", "invalid_request")
 		return
 	}
-	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "user", request.Content); err != nil {
+	request.Model = strings.TrimSpace(request.Model)
+	if request.Model == "" {
+		request.Model = s.defaultModel
+	}
+	if !s.isAllowedModel(request.Model) {
+		writeError(w, http.StatusBadRequest, "requested model is not allowed", "model_not_allowed")
+		return
+	}
+	models, err := s.availableModels(r.Context())
+	if err != nil {
+		s.logger.Warn("list gateway models before generation", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
+		return
+	}
+	if !containsModel(models, request.Model) {
+		writeError(w, http.StatusServiceUnavailable, "requested model is not currently available", "model_unavailable")
+		return
+	}
+	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "user", request.Content, ""); err != nil {
 		s.writeConversationError(w, err)
 		return
 	}
@@ -384,7 +432,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	var answer strings.Builder
 	err = s.gateway.Stream(r.Context(), gateway.ChatRequest{
-		Model:     "qwen2.5:1.5b-instruct",
+		Model:     request.Model,
 		Messages:  gatewayMessages,
 		MaxTokens: request.MaxTokens,
 		UserID:    user.ID,
@@ -402,7 +450,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return
 	}
-	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "assistant", answer.String()); err != nil {
+	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "assistant", answer.String(), request.Model); err != nil {
 		s.logger.Error("persist assistant message", "error", err)
 		_ = writeSSE(w, apiError{Error: errorBody{Message: "could not save assistant response", Code: "server_error"}})
 		flusher.Flush()
@@ -410,6 +458,37 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
+}
+
+func (s *Server) availableModels(ctx context.Context) ([]gateway.Model, error) {
+	if s.gateway == nil {
+		return nil, errors.New("AI gateway is not configured")
+	}
+	models, err := s.gateway.Models(ctx)
+	if err != nil {
+		return nil, err
+	}
+	available := make([]gateway.Model, 0, len(models))
+	for _, model := range models {
+		if s.isAllowedModel(model.ID) {
+			available = append(available, model)
+		}
+	}
+	return available, nil
+}
+
+func (s *Server) isAllowedModel(model string) bool {
+	_, allowed := s.allowedModels[model]
+	return allowed
+}
+
+func containsModel(models []gateway.Model, modelID string) bool {
+	for _, model := range models {
+		if model.ID == modelID {
+			return true
+		}
+	}
+	return false
 }
 
 func streamErrorEvent(err error) apiError {

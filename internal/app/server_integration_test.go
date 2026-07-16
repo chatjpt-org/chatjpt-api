@@ -48,6 +48,17 @@ func TestServerIntegration(t *testing.T) {
 	}
 
 	gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			if r.Header.Get("CF-Access-Client-Id") != "client-id" || r.Header.Get("CF-Access-Client-Secret") != "client-secret" {
+				t.Error("gateway models request is missing Cloudflare Access headers")
+			}
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"qwen2.5:1.5b-instruct","object":"model","owned_by":"chatjpt"}]}`)
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Header.Get("X-JChat-User-ID") == "" {
 			t.Error("gateway request is missing user ID")
 		}
@@ -160,6 +171,19 @@ func TestServerIntegration(t *testing.T) {
 	defer otherUserResponse.Body.Close()
 	if otherUserResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("other user status = %d, want %d", otherUserResponse.StatusCode, http.StatusNotFound)
+	}
+	modelRequest, err := http.NewRequest(http.MethodGet, apiServer.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(models) error = %v", err)
+	}
+	modelRequest.AddCookie(firstCookie)
+	modelResponse, err := apiServer.Client().Do(modelRequest)
+	if err != nil {
+		t.Fatalf("models request error = %v", err)
+	}
+	defer modelResponse.Body.Close()
+	if modelResponse.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d, want %d", modelResponse.StatusCode, http.StatusOK)
 	}
 
 	messageRequest, err := http.NewRequest(http.MethodPost, apiServer.URL+"/v1/conversations/"+conversation.ID+"/messages", strings.NewReader(`{"content":"hello","max_tokens":64}`))

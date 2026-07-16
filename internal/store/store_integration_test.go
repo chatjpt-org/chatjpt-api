@@ -61,13 +61,13 @@ func TestStoreIntegration(t *testing.T) {
 		t.Fatalf("FindConversation(other user) error = %v, want not found", err)
 	}
 
-	if _, err := store.CreateMessage(ctx, secondUser.ID, conversation.ID, "user", "not allowed"); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := store.CreateMessage(ctx, secondUser.ID, conversation.ID, "user", "not allowed", ""); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("CreateMessage(other user) error = %v, want not found", err)
 	}
-	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "user", "hello"); err != nil {
+	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "user", "hello", ""); err != nil {
 		t.Fatalf("CreateMessage(user) error = %v", err)
 	}
-	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "assistant", "hello back"); err != nil {
+	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "assistant", "hello back", "qwen2.5:1.5b-instruct"); err != nil {
 		t.Fatalf("CreateMessage(assistant) error = %v", err)
 	}
 	messages, err := store.ListMessages(ctx, firstUser.ID, conversation.ID)
