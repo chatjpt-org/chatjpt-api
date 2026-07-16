@@ -58,10 +58,34 @@ func main() {
 			logger.Error("create user", "error", err)
 			os.Exit(1)
 		}
+	case "set-user-role":
+		if err := setUserRole(context.Background(), pool, os.Args[2:]); err != nil {
+			logger.Error("set user role", "error", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: chatjpt-api [serve|migrate|create-user]")
+		fmt.Fprintln(os.Stderr, "usage: chatjpt-api [serve|migrate|create-user|set-user-role <username> <member|admin>]")
 		os.Exit(2)
 	}
+}
+
+func setUserRole(ctx context.Context, pool *store.Store, args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: set-user-role <username> <member|admin>")
+	}
+	username := strings.TrimSpace(args[0])
+	if err := auth.ValidateUsername(username); err != nil {
+		return err
+	}
+	role, err := store.ParseUserRole(args[1])
+	if err != nil {
+		return err
+	}
+	if err := pool.SetUserRole(ctx, username, role); err != nil {
+		return err
+	}
+	fmt.Printf("User %q role set to %q.\n", username, role)
+	return nil
 }
 
 func createUser(ctx context.Context, pool *store.Store) error {

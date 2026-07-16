@@ -23,13 +23,18 @@ const (
 )
 
 type Server struct {
-	config        Config
-	store         *store.Store
-	logger        *slog.Logger
-	loginLimiter  *loginLimiter
-	gateway       *gateway.Client
-	allowedModels map[string]struct{}
-	defaultModel  string
+	config       Config
+	store        *store.Store
+	logger       *slog.Logger
+	loginLimiter *loginLimiter
+	gateway      *gateway.Client
+	modelAccess  modelAccess
+}
+
+type modelAccess struct {
+	memberModels map[string]struct{}
+	adminModels  map[string]struct{}
+	defaultModel string
 }
 
 type loginRequest struct {
@@ -40,6 +45,7 @@ type loginRequest struct {
 type userResponse struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
+	Role     string `json:"role"`
 }
 
 type conversationRequest struct {
@@ -71,13 +77,10 @@ type errorBody struct {
 }
 
 func NewServer(config Config, store *store.Store, logger *slog.Logger) (*Server, error) {
-	if len(config.AllowedModels) == 0 {
-		config.AllowedModels = []string{defaultModel}
+	if len(config.MemberModels) == 0 {
+		config.MemberModels = []string{defaultModel}
 	}
-	allowedModels := make(map[string]struct{}, len(config.AllowedModels))
-	for _, model := range config.AllowedModels {
-		allowedModels[model] = struct{}{}
-	}
+	access := newModelAccess(config.MemberModels, config.AdminModels)
 
 	var client *gateway.Client
 	if config.GatewayURL != "" && config.GatewayAccessID != "" && config.GatewaySecret != "" {
@@ -88,13 +91,12 @@ func NewServer(config Config, store *store.Store, logger *slog.Logger) (*Server,
 		}
 	}
 	return &Server{
-		config:        config,
-		store:         store,
-		logger:        logger,
-		loginLimiter:  newLoginLimiter(),
-		gateway:       client,
-		allowedModels: allowedModels,
-		defaultModel:  config.AllowedModels[0],
+		config:       config,
+		store:        store,
+		logger:       logger,
+		loginLimiter: newLoginLimiter(),
+		gateway:      client,
+		modelAccess:  access,
 	}, nil
 }
 
@@ -210,7 +212,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, sessionCookie(token, s.config.CookieSecure, s.config.SessionDuration))
-	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username})
+	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +234,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username})
+	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
 }
 
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
@@ -352,10 +354,11 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authenticatedUser(w, r); !ok {
+	user, ok := s.authenticatedUser(w, r)
+	if !ok {
 		return
 	}
-	models, err := s.availableModels(r.Context())
+	models, err := s.availableModels(r.Context(), user)
 	if err != nil {
 		s.logger.Warn("list gateway models", "error", err)
 		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
@@ -392,13 +395,13 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Model = strings.TrimSpace(request.Model)
 	if request.Model == "" {
-		request.Model = s.defaultModel
+		request.Model = s.modelAccess.defaultModel
 	}
-	if !s.isAllowedModel(request.Model) {
+	if !s.modelAccess.allows(user, request.Model) {
 		writeError(w, http.StatusBadRequest, "requested model is not allowed", "model_not_allowed")
 		return
 	}
-	models, err := s.availableModels(r.Context())
+	models, err := s.availableModels(r.Context(), user)
 	if err != nil {
 		s.logger.Warn("list gateway models before generation", "error", err)
 		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
@@ -460,7 +463,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 }
 
-func (s *Server) availableModels(ctx context.Context) ([]gateway.Model, error) {
+func (s *Server) availableModels(ctx context.Context, user store.User) ([]gateway.Model, error) {
 	if s.gateway == nil {
 		return nil, errors.New("AI gateway is not configured")
 	}
@@ -470,15 +473,36 @@ func (s *Server) availableModels(ctx context.Context) ([]gateway.Model, error) {
 	}
 	available := make([]gateway.Model, 0, len(models))
 	for _, model := range models {
-		if s.isAllowedModel(model.ID) {
+		if s.modelAccess.allows(user, model.ID) {
 			available = append(available, model)
 		}
 	}
 	return available, nil
 }
 
-func (s *Server) isAllowedModel(model string) bool {
-	_, allowed := s.allowedModels[model]
+func newModelAccess(memberModels, adminModels []string) modelAccess {
+	access := modelAccess{
+		memberModels: make(map[string]struct{}, len(memberModels)),
+		adminModels:  make(map[string]struct{}, len(adminModels)),
+		defaultModel: memberModels[0],
+	}
+	for _, model := range memberModels {
+		access.memberModels[model] = struct{}{}
+	}
+	for _, model := range adminModels {
+		access.adminModels[model] = struct{}{}
+	}
+	return access
+}
+
+func (a modelAccess) allows(user store.User, model string) bool {
+	if _, allowed := a.memberModels[model]; allowed {
+		return true
+	}
+	if user.Role != store.RoleAdmin {
+		return false
+	}
+	_, allowed := a.adminModels[model]
 	return allowed
 }
 

@@ -48,6 +48,19 @@ func TestStoreIntegration(t *testing.T) {
 	if passwordHash != "first-password-hash" {
 		t.Errorf("password hash = %q, want first-password-hash", passwordHash)
 	}
+	if firstUser.Role != RoleMember {
+		t.Errorf("first user role = %q, want %q", firstUser.Role, RoleMember)
+	}
+	if err := store.SetUserRole(ctx, firstUsername, RoleAdmin); err != nil {
+		t.Fatalf("SetUserRole() error = %v", err)
+	}
+	firstUser, _, err = store.FindUserByUsername(ctx, firstUsername)
+	if err != nil {
+		t.Fatalf("FindUserByUsername(first after role update) error = %v", err)
+	}
+	if firstUser.Role != RoleAdmin {
+		t.Errorf("first user role after update = %q, want %q", firstUser.Role, RoleAdmin)
+	}
 	secondUser, _, err := store.FindUserByUsername(ctx, secondUsername)
 	if err != nil {
 		t.Fatalf("FindUserByUsername(second) error = %v", err)
