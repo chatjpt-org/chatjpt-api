@@ -53,3 +53,28 @@ func TestStreamReturnsResponseError(t *testing.T) {
 		t.Fatalf("Stream() error = %v, want HTTP 429", err)
 	}
 }
+
+func TestModelsSendsAccessHeadersAndParsesCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("CF-Access-Client-Id") != "client-id" || r.Header.Get("CF-Access-Client-Secret") != "client-secret" {
+			t.Fatal("missing Cloudflare Access headers")
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"qwen2.5:1.5b-instruct","object":"model","owned_by":"chatjpt"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "client-id", "client-secret", server.Client())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "qwen2.5:1.5b-instruct" {
+		t.Fatalf("models = %#v", models)
+	}
+}

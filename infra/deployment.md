@@ -11,7 +11,8 @@ Tunnel usado pelo jpad. Ele nao executa enquanto a repository variable
 2. Cadastre a chave privada como GitHub Actions secret
    `KVM2_DEPLOY_SSH_PRIVATE_KEY` no repositorio `chatjpt-org/chatjpt-api`.
 3. Na KVM2, crie `/opt/chatjpt-api/.env` a partir de `infra/.env.example` e
-   preencha senhas e as credenciais do service token `jchat-api-service`.
+   preencha senhas, a allowlist `JCHAT_ALLOWED_MODELS` e as credenciais do
+   service token `jchat-api-service`.
 4. Defina a repository variable `DEPLOY_ENABLED=true` somente depois de testar
    o acesso SSH e revisar o arquivo `.env`.
 

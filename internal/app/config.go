@@ -17,6 +17,7 @@ type Config struct {
 	GatewayURL      string
 	GatewayAccessID string
 	GatewaySecret   string
+	AllowedModels   []string
 }
 
 func LoadConfig() (Config, error) {
@@ -29,6 +30,10 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	allowedModels, err := modelList(environmentOr("JCHAT_ALLOWED_MODELS", defaultModel))
+	if err != nil {
+		return Config{}, fmt.Errorf("JCHAT_ALLOWED_MODELS: %w", err)
+	}
 
 	config := Config{
 		Address:         environmentOr("JCHAT_API_ADDR", ":8080"),
@@ -38,11 +43,29 @@ func LoadConfig() (Config, error) {
 		GatewayURL:      environmentOr("JCHAT_GATEWAY_URL", ""),
 		GatewayAccessID: environmentOr("JCHAT_GATEWAY_ACCESS_ID", ""),
 		GatewaySecret:   environmentOr("JCHAT_GATEWAY_ACCESS_SECRET", ""),
+		AllowedModels:   allowedModels,
 	}
 	if err := config.validateGatewayCredentials(); err != nil {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+func modelList(value string) ([]string, error) {
+	models := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, candidate := range strings.Split(value, ",") {
+		model := strings.TrimSpace(candidate)
+		if model == "" {
+			return nil, errors.New("model identifiers cannot be empty")
+		}
+		if _, exists := seen[model]; exists {
+			return nil, fmt.Errorf("model %q is configured more than once", model)
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	return models, nil
 }
 
 func (c Config) validateGatewayCredentials() error {

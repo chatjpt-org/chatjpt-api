@@ -23,6 +23,12 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
 type ChatRequest struct {
 	Model     string    `json:"model"`
 	Messages  []Message `json:"messages"`
@@ -127,4 +133,33 @@ func (c *Client) Stream(ctx context.Context, request ChatRequest, handleChunk fu
 		return fmt.Errorf("read gateway SSE stream: %w", err)
 	}
 	return fmt.Errorf("gateway stream ended without [DONE]")
+}
+
+func (c *Client) Models(ctx context.Context) ([]Model, error) {
+	endpoint := c.baseURL.JoinPath("v1", "models")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create gateway models request: %w", err)
+	}
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("CF-Access-Client-Id", c.accessID)
+	httpRequest.Header.Set("CF-Access-Client-Secret", c.accessSecret)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("send gateway models request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		return nil, &ResponseError{StatusCode: response.StatusCode, Message: strings.TrimSpace(string(message))}
+	}
+
+	var payload struct {
+		Data []Model `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode gateway models response: %w", err)
+	}
+	return payload.Data, nil
 }
