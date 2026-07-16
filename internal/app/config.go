@@ -17,7 +17,8 @@ type Config struct {
 	GatewayURL      string
 	GatewayAccessID string
 	GatewaySecret   string
-	AllowedModels   []string
+	MemberModels    []string
+	AdminModels     []string
 }
 
 func LoadConfig() (Config, error) {
@@ -30,9 +31,13 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	allowedModels, err := modelList(environmentOr("JCHAT_ALLOWED_MODELS", defaultModel))
+	memberModels, err := modelList(environmentOr("JCHAT_MEMBER_MODELS", environmentOr("JCHAT_ALLOWED_MODELS", defaultModel)))
 	if err != nil {
-		return Config{}, fmt.Errorf("JCHAT_ALLOWED_MODELS: %w", err)
+		return Config{}, fmt.Errorf("JCHAT_MEMBER_MODELS: %w", err)
+	}
+	adminModels, err := optionalModelList(os.Getenv("JCHAT_ADMIN_MODELS"))
+	if err != nil {
+		return Config{}, fmt.Errorf("JCHAT_ADMIN_MODELS: %w", err)
 	}
 
 	config := Config{
@@ -43,7 +48,8 @@ func LoadConfig() (Config, error) {
 		GatewayURL:      environmentOr("JCHAT_GATEWAY_URL", ""),
 		GatewayAccessID: environmentOr("JCHAT_GATEWAY_ACCESS_ID", ""),
 		GatewaySecret:   environmentOr("JCHAT_GATEWAY_ACCESS_SECRET", ""),
-		AllowedModels:   allowedModels,
+		MemberModels:    memberModels,
+		AdminModels:     adminModels,
 	}
 	if err := config.validateGatewayCredentials(); err != nil {
 		return Config{}, err
@@ -66,6 +72,13 @@ func modelList(value string) ([]string, error) {
 		models = append(models, model)
 	}
 	return models, nil
+}
+
+func optionalModelList(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	return modelList(value)
 }
 
 func (c Config) validateGatewayCredentials() error {

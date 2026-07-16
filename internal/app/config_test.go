@@ -48,6 +48,23 @@ func TestLoadConfigAcceptsCompleteGatewayValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSeparatesMemberAndAdminModels(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://jchat:test@localhost:5432/jchat")
+	t.Setenv("JCHAT_MEMBER_MODELS", "qwen2.5:1.5b-instruct")
+	t.Setenv("JCHAT_ADMIN_MODELS", "qwen3:4b-instruct")
+
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(config.MemberModels) != 1 || config.MemberModels[0] != "qwen2.5:1.5b-instruct" {
+		t.Fatalf("MemberModels = %#v", config.MemberModels)
+	}
+	if len(config.AdminModels) != 1 || config.AdminModels[0] != "qwen3:4b-instruct" {
+		t.Fatalf("AdminModels = %#v", config.AdminModels)
+	}
+}
+
 func TestModelListRejectsDuplicateModels(t *testing.T) {
 	_, err := modelList("qwen2.5:1.5b-instruct,qwen2.5:1.5b-instruct")
 	if err == nil {

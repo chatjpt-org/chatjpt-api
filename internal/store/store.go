@@ -24,6 +24,24 @@ type Store struct {
 type User struct {
 	ID       string
 	Username string
+	Role     UserRole
+}
+
+type UserRole string
+
+const (
+	RoleMember UserRole = "member"
+	RoleAdmin  UserRole = "admin"
+)
+
+func ParseUserRole(value string) (UserRole, error) {
+	role := UserRole(strings.TrimSpace(value))
+	switch role {
+	case RoleMember, RoleAdmin:
+		return role, nil
+	default:
+		return "", fmt.Errorf("unknown user role %q", value)
+	}
 }
 
 type Conversation struct {
@@ -62,9 +80,30 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO users (username, password_hash) VALUES ($1, $2)`, username, passwordHash)
+	return s.CreateUserWithRole(ctx, username, passwordHash, RoleMember)
+}
+
+func (s *Store) CreateUserWithRole(ctx context.Context, username, passwordHash string, role UserRole) error {
+	if _, err := ParseUserRole(string(role)); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)`, username, passwordHash, role)
 	if err != nil {
 		return fmt.Errorf("insert user: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SetUserRole(ctx context.Context, username string, role UserRole) error {
+	if _, err := ParseUserRole(string(role)); err != nil {
+		return err
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE users SET role = $1 WHERE username = $2`, role, username)
+	if err != nil {
+		return fmt.Errorf("update user role: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
 	}
 	return nil
 }
@@ -72,7 +111,7 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) e
 func (s *Store) FindUserByUsername(ctx context.Context, username string) (User, string, error) {
 	var user User
 	var passwordHash string
-	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash FROM users WHERE username = $1`, username).Scan(&user.ID, &user.Username, &passwordHash)
+	err := s.pool.QueryRow(ctx, `SELECT id, username, role, password_hash FROM users WHERE username = $1`, username).Scan(&user.ID, &user.Username, &user.Role, &passwordHash)
 	if err != nil {
 		return User{}, "", err
 	}
@@ -90,10 +129,10 @@ func (s *Store) CreateSession(ctx context.Context, userID string, tokenHash [sha
 func (s *Store) FindUserBySession(ctx context.Context, tokenHash [sha256.Size]byte) (User, error) {
 	var user User
 	err := s.pool.QueryRow(ctx, `
-		SELECT users.id, users.username
+		SELECT users.id, users.username, users.role
 		FROM sessions
 		JOIN users ON users.id = sessions.user_id
-		WHERE sessions.token_hash = $1 AND sessions.expires_at > NOW()`, tokenHash[:]).Scan(&user.ID, &user.Username)
+		WHERE sessions.token_hash = $1 AND sessions.expires_at > NOW()`, tokenHash[:]).Scan(&user.ID, &user.Username, &user.Role)
 	if err != nil {
 		return User{}, err
 	}

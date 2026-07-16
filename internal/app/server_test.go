@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/chatjpt-org/chatjpt-api/internal/gateway"
+	"github.com/chatjpt-org/chatjpt-api/internal/store"
 )
 
 func TestStreamErrorEvent(t *testing.T) {
@@ -54,5 +55,24 @@ func TestSecurityHeaders(t *testing.T) {
 		if got := response.Header().Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestModelAccessRestrictsAdminModels(t *testing.T) {
+	access := newModelAccess(
+		[]string{"qwen2.5:1.5b-instruct"},
+		[]string{"qwen3:4b-instruct"},
+	)
+	member := store.User{Role: store.RoleMember}
+	admin := store.User{Role: store.RoleAdmin}
+
+	if !access.allows(member, "qwen2.5:1.5b-instruct") {
+		t.Error("member should be allowed to use the member model")
+	}
+	if access.allows(member, "qwen3:4b-instruct") {
+		t.Error("member should not be allowed to use the admin model")
+	}
+	if !access.allows(admin, "qwen3:4b-instruct") {
+		t.Error("admin should be allowed to use the admin model")
 	}
 }

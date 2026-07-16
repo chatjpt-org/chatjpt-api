@@ -12,6 +12,8 @@ esta API; as credenciais do Cloudflare Access ficam restritas ao servidor.
 - CRUD de conversas e historico de mensagens por usuario.
 - Streaming Server-Sent Events (SSE) para o gateway de IA.
 - O gateway recebe o ID interno do usuario e nao credenciais do navegador.
+- As contas possuem os papeis `member` e `admin`; a API filtra o catalogo de
+  modelos antes de responder ao navegador e antes de iniciar cada geracao.
 
 Nao existe cadastro publico. O administrador cria usuarios pelo comando
 `create-user`.
@@ -50,16 +52,27 @@ configure as tres variaveis abaixo juntas:
 JCHAT_GATEWAY_URL=https://ai.example.com
 JCHAT_GATEWAY_ACCESS_ID=<Cloudflare Access client ID>
 JCHAT_GATEWAY_ACCESS_SECRET=<Cloudflare Access client secret>
-JCHAT_ALLOWED_MODELS=qwen2.5:1.5b-instruct,qwen3:4b-instruct
+JCHAT_MEMBER_MODELS=qwen2.5:1.5b-instruct
+JCHAT_ADMIN_MODELS=qwen3:4b-instruct
 ```
 
 As credenciais pertencem ao Service Token `jchat-api-service` no Cloudflare
 Access. Nunca devem ser entregues ao cliente web, versionadas ou registradas em
 logs.
 
-`JCHAT_ALLOWED_MODELS` e uma allowlist local da API. O endpoint de catalogo
-exibe somente a intersecao entre essa lista e o catalogo retornado pelo gateway.
-Assim, instalar um modelo no Ollama nao o torna acessivel ao navegador.
+`JCHAT_MEMBER_MODELS` e a allowlist dos usuarios comuns.
+`JCHAT_ADMIN_MODELS` adiciona modelos somente para administradores. O endpoint
+de catalogo exibe a intersecao entre a politica da conta e o catalogo retornado
+pelo gateway. Assim, instalar um modelo no Ollama nao o torna acessivel ao
+navegador. `JCHAT_ALLOWED_MODELS` continua aceito apenas como compatibilidade
+com a configuracao anterior e equivale a `JCHAT_MEMBER_MODELS`.
+
+Contas novas sao criadas como `member`. Depois de criar ou migrar uma conta,
+promova-a no servidor com:
+
+```bash
+docker compose run --rm api set-user-role arthur admin
+```
 
 Para desenvolvimento HTTP local, defina `JCHAT_COOKIE_SECURE=false`. Esse valor
 nao deve ser usado na KVM2 em producao.

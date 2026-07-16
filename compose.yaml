@@ -39,6 +39,8 @@ services:
       JCHAT_GATEWAY_ACCESS_ID: ${JCHAT_GATEWAY_ACCESS_ID}
       JCHAT_GATEWAY_ACCESS_SECRET: ${JCHAT_GATEWAY_ACCESS_SECRET}
       JCHAT_ALLOWED_MODELS: ${JCHAT_ALLOWED_MODELS:-qwen2.5:1.5b-instruct}
+      JCHAT_MEMBER_MODELS: ${JCHAT_MEMBER_MODELS:-}
+      JCHAT_ADMIN_MODELS: ${JCHAT_ADMIN_MODELS:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
