@@ -210,6 +210,9 @@ func TestServerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stream: %v", err)
 	}
+	if !strings.HasPrefix(string(stream), ":"+strings.Repeat(" ", ssePaddingBytes)+"\n\n") {
+		t.Fatalf("stream does not begin with SSE padding")
+	}
 	if !strings.Contains(string(stream), `"delta":"hello back"`) || !strings.Contains(string(stream), "data: [DONE]") {
 		t.Fatalf("stream = %q", stream)
 	}
