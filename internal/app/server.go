@@ -20,6 +20,7 @@ const (
 	cookieName      = "chatjpt_session"
 	maxRequestBytes = 1 << 20
 	defaultModel    = "qwen2.5:1.5b-instruct"
+	ssePaddingBytes = 2048
 )
 
 type Server struct {
@@ -434,6 +435,13 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported", "server_error")
 		return
 	}
+	// The initial SSE comment makes intermediaries start forwarding the stream now,
+	// rather than buffering the first small model chunks until the response ends.
+	if err := writeSSEPadding(w); err != nil {
+		s.logger.Warn("write SSE padding", "error", err)
+		return
+	}
+	flusher.Flush()
 	var answer strings.Builder
 	err = s.gateway.Stream(r.Context(), gateway.ChatRequest{
 		Model:     request.Model,
@@ -667,5 +675,10 @@ func writeSSE(w http.ResponseWriter, value any) error {
 		return err
 	}
 	_, err = w.Write([]byte("data: " + string(payload) + "\n\n"))
+	return err
+}
+
+func writeSSEPadding(w io.Writer) error {
+	_, err := io.WriteString(w, ":"+strings.Repeat(" ", ssePaddingBytes)+"\n\n")
 	return err
 }
