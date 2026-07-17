@@ -200,6 +200,12 @@ func TestServerIntegration(t *testing.T) {
 	if streamResponse.StatusCode != http.StatusOK {
 		t.Fatalf("message status = %d, want %d", streamResponse.StatusCode, http.StatusOK)
 	}
+	if cacheControl := streamResponse.Header.Get("Cache-Control"); cacheControl != "no-cache, no-transform" {
+		t.Errorf("Cache-Control = %q, want no-cache, no-transform", cacheControl)
+	}
+	if buffering := streamResponse.Header.Get("X-Accel-Buffering"); buffering != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want no", buffering)
+	}
 	stream, err := io.ReadAll(streamResponse.Body)
 	if err != nil {
 		t.Fatalf("read stream: %v", err)
