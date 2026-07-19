@@ -52,11 +52,12 @@ type Conversation struct {
 }
 
 type Message struct {
-	ID        string
-	Role      string
-	Content   string
-	Model     string
-	CreatedAt time.Time
+	ID         string
+	Role       string
+	Content    string
+	Model      string
+	Incomplete bool
+	CreatedAt  time.Time
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -237,7 +238,7 @@ func (s *Store) DeleteConversation(ctx context.Context, userID, conversationID s
 
 func (s *Store) ListMessages(ctx context.Context, userID, conversationID string) ([]Message, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT messages.id, messages.role, messages.content, COALESCE(messages.model, ''), messages.created_at
+		SELECT messages.id, messages.role, messages.content, COALESCE(messages.model, ''), messages.incomplete, messages.created_at
 		FROM messages
 		JOIN conversations ON conversations.id = messages.conversation_id
 		WHERE messages.conversation_id = $1 AND conversations.user_id = $2
@@ -250,7 +251,7 @@ func (s *Store) ListMessages(ctx context.Context, userID, conversationID string)
 	var messages []Message
 	for rows.Next() {
 		var message Message
-		if err := rows.Scan(&message.ID, &message.Role, &message.Content, &message.Model, &message.CreatedAt); err != nil {
+		if err := rows.Scan(&message.ID, &message.Role, &message.Content, &message.Model, &message.Incomplete, &message.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		messages = append(messages, message)
@@ -262,6 +263,14 @@ func (s *Store) ListMessages(ctx context.Context, userID, conversationID string)
 }
 
 func (s *Store) CreateMessage(ctx context.Context, userID, conversationID, role, content, model string) (Message, error) {
+	return s.createMessage(ctx, userID, conversationID, role, content, model, false)
+}
+
+func (s *Store) CreateAssistantMessage(ctx context.Context, userID, conversationID, content, model string, incomplete bool) (Message, error) {
+	return s.createMessage(ctx, userID, conversationID, "assistant", content, model, incomplete)
+}
+
+func (s *Store) createMessage(ctx context.Context, userID, conversationID, role, content, model string, incomplete bool) (Message, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Message{}, fmt.Errorf("begin create message: %w", err)
@@ -270,15 +279,16 @@ func (s *Store) CreateMessage(ctx context.Context, userID, conversationID, role,
 
 	var message Message
 	err = tx.QueryRow(ctx, `
-		INSERT INTO messages (conversation_id, role, content, model)
-		SELECT id, $3, $4, NULLIF($5, '')
+		INSERT INTO messages (conversation_id, role, content, model, incomplete)
+		SELECT id, $3, $4, NULLIF($5, ''), $6
 		FROM conversations
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, role, content, COALESCE(model, ''), created_at`, conversationID, userID, role, content, model).Scan(
+		RETURNING id, role, content, COALESCE(model, ''), incomplete, created_at`, conversationID, userID, role, content, model, incomplete).Scan(
 		&message.ID,
 		&message.Role,
 		&message.Content,
 		&message.Model,
+		&message.Incomplete,
 		&message.CreatedAt,
 	)
 	if err != nil {

@@ -50,6 +50,15 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("gateway returned HTTP %d: %s", e.StatusCode, e.Message)
 }
 
+type StreamError struct {
+	Code    string
+	Message string
+}
+
+func (e *StreamError) Error() string {
+	return fmt.Sprintf("gateway stream error %s: %s", e.Code, e.Message)
+}
+
 func New(baseURL, accessID, accessSecret string, httpClient *http.Client) (*Client, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
@@ -109,6 +118,10 @@ func (c *Client) Stream(ctx context.Context, request ChatRequest, handleChunk fu
 			return nil
 		}
 		var event struct {
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -118,6 +131,9 @@ func (c *Client) Stream(ctx context.Context, request ChatRequest, handleChunk fu
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return fmt.Errorf("decode gateway SSE event: %w", err)
+		}
+		if event.Error != nil {
+			return &StreamError{Code: event.Error.Type, Message: event.Error.Message}
 		}
 		for _, choice := range event.Choices {
 			finishReason := ""

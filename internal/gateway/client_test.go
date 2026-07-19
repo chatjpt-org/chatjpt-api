@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,5 +77,26 @@ func TestModelsSendsAccessHeadersAndParsesCatalog(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "qwen2.5:1.5b-instruct" {
 		t.Fatalf("models = %#v", models)
+	}
+}
+
+func TestStreamReturnsSSEError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"generation interrupted\",\"type\":\"timeout_error\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "client-id", "client-secret", server.Client())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	err = client.Stream(context.Background(), ChatRequest{}, func(Chunk) error { return nil })
+	var streamError *StreamError
+	if !errors.As(err, &streamError) {
+		t.Fatalf("Stream() error = %v, want StreamError", err)
+	}
+	if streamError.Code != "timeout_error" {
+		t.Errorf("StreamError.Code = %q, want timeout_error", streamError.Code)
 	}
 }
