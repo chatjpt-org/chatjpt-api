@@ -102,3 +102,17 @@ func TestModelAccessRespectsPersistedVisibility(t *testing.T) {
 		t.Error("admin should keep access to locked models")
 	}
 }
+
+func TestDecodeModelID(t *testing.T) {
+	modelID, err := decodeModelID("qwen3%3A4b-instruct")
+	if err != nil {
+		t.Fatalf("decodeModelID() error = %v", err)
+	}
+	if modelID != "qwen3:4b-instruct" {
+		t.Errorf("decodeModelID() = %q, want %q", modelID, "qwen3:4b-instruct")
+	}
+
+	if _, err := decodeModelID("%zz"); err == nil {
+		t.Error("decodeModelID() error = nil, want malformed escape error")
+	}
+}
