@@ -51,6 +51,11 @@ type Conversation struct {
 	UpdatedAt time.Time
 }
 
+type ModelVisibility struct {
+	ModelID  string
+	IsPublic bool
+}
+
 type Message struct {
 	ID         string
 	Role       string
@@ -95,6 +100,29 @@ func (s *Store) CreateUserWithRole(ctx context.Context, username, passwordHash s
 	return nil
 }
 
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, username, role
+		FROM users
+		ORDER BY username ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.Username, &user.Role); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return users, nil
+}
 func (s *Store) SetUserRole(ctx context.Context, username string, role UserRole) error {
 	if _, err := ParseUserRole(string(role)); err != nil {
 		return err
@@ -148,6 +176,38 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash [sha256.Size]byte) 
 	return nil
 }
 
+func (s *Store) ListModelVisibility(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT model_id, is_public FROM model_visibility`)
+	if err != nil {
+		return nil, fmt.Errorf("list model visibility: %w", err)
+	}
+	defer rows.Close()
+
+	visibility := make(map[string]bool)
+	for rows.Next() {
+		var model ModelVisibility
+		if err := rows.Scan(&model.ModelID, &model.IsPublic); err != nil {
+			return nil, fmt.Errorf("scan model visibility: %w", err)
+		}
+		visibility[model.ModelID] = model.IsPublic
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model visibility: %w", err)
+	}
+	return visibility, nil
+}
+
+func (s *Store) SetModelVisibility(ctx context.Context, modelID string, isPublic bool) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO model_visibility (model_id, is_public)
+		VALUES ($1, $2)
+		ON CONFLICT (model_id)
+		DO UPDATE SET is_public = EXCLUDED.is_public, updated_at = NOW()`, modelID, isPublic)
+	if err != nil {
+		return fmt.Errorf("set model visibility: %w", err)
+	}
+	return nil
+}
 func (s *Store) CreateConversation(ctx context.Context, userID, title string) (Conversation, error) {
 	var conversation Conversation
 	err := s.pool.QueryRow(ctx, `

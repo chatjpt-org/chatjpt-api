@@ -15,14 +15,14 @@ esta API; as credenciais do Cloudflare Access ficam restritas ao servidor.
 - As contas possuem os papeis `member` e `admin`; a API filtra o catalogo de
   modelos antes de responder ao navegador e antes de iniciar cada geracao.
 
-Nao existe cadastro publico. O administrador cria usuarios pelo comando
-`create-user`.
+Existe cadastro publico em `/v1/auth/register`; toda conta criada por essa rota recebe o papel `member`. Somente administradores autenticados podem criar ou promover outra conta para `admin`.
 
 ## Endpoints
 
 | Metodo | Caminho | Descricao |
 | --- | --- | --- |
 | `GET` | `/healthz` | Verifica a conexao com PostgreSQL. |
+| `POST` | `/v1/auth/register` | Cria uma conta `member` e inicia a sessao. |
 | `POST` | `/v1/auth/login` | Cria uma sessao por usuario e senha. |
 | `POST` | `/v1/auth/logout` | Revoga a sessao atual. |
 | `GET` | `/v1/auth/session` | Retorna o usuario da sessao atual. |
@@ -34,6 +34,11 @@ Nao existe cadastro publico. O administrador cria usuarios pelo comando
 | `DELETE` | `/v1/conversations/{id}` | Remove uma conversa. |
 | `GET` | `/v1/conversations/{id}/messages` | Lista mensagens de uma conversa. |
 | `POST` | `/v1/conversations/{id}/messages` | Persiste a mensagem do usuario e transmite a resposta em SSE. |
+| `GET` | `/v1/admin/models` | Lista o catalogo com a visibilidade efetiva; exige `admin`. |
+| `PUT` | `/v1/admin/models/{modelID}` | Define `is_public`; exige `admin`. |
+| `GET` | `/v1/admin/users` | Lista contas e papeis; exige `admin`. |
+| `POST` | `/v1/admin/users` | Cria outra conta `admin`; exige `admin`. |
+| `PATCH` | `/v1/admin/users/{username}/role` | Promove ou rebaixa outra conta; exige `admin`. |
 
 O corpo do endpoint de mensagens aceita `content` e `max_tokens` (de 1 a 1024; padrao 1024), alem de `model` opcional. Quando ausente, usa o primeiro
 modelo configurado. Cada evento SSE tem `delta` e, no ultimo evento, pode ter `finish_reason` e `incomplete`. Quando `incomplete` e verdadeiro, a resposta parcial foi salva. Ao encerrar com sucesso, a API envia `data: [DONE]`.
@@ -99,3 +104,10 @@ docker compose up -d --build
 O Compose deixa PostgreSQL fora da rede `jchat`. Apenas a API entra nessa rede,
 permitindo que o proxy do cliente web a alcance pelo hostname `chatjpt-api`.
 A API nao publica porta no host.
+## Politica de usuarios e modelos
+
+- O cadastro publico cria apenas contas `member` e inicia a sessao automaticamente.
+- Cada conversa e mensagem permanece associada ao dono no PostgreSQL; uma conta nao pode ler ou alterar a conversa de outra.
+- Administradores veem todos os modelos retornados pelo gateway.
+- Membros veem somente modelos publicos. A tabela `model_visibility` prevalece sobre a allowlist inicial de `JCHAT_MEMBER_MODELS`, permitindo liberar ou travar modelos sem reiniciar o servico.
+- Um administrador nao pode alterar o proprio papel pela API.
