@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -347,8 +348,8 @@ func (s *Server) updateModelVisibility(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authenticatedAdmin(w, r); !ok {
 		return
 	}
-	modelID := strings.TrimSpace(chi.URLParam(r, "modelID"))
-	if modelID == "" {
+	modelID, err := decodeModelID(chi.URLParam(r, "modelID"))
+	if err != nil || modelID == "" {
 		writeError(w, http.StatusBadRequest, "model ID is required", "invalid_request")
 		return
 	}
@@ -792,6 +793,14 @@ func (a modelAccess) allows(user store.User, model string) bool {
 	}
 	_, allowed := a.adminModels[model]
 	return allowed
+}
+
+func decodeModelID(rawModelID string) (string, error) {
+	modelID, err := url.PathUnescape(strings.TrimSpace(rawModelID))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(modelID), nil
 }
 
 func containsModel(models []gateway.Model, modelID string) bool {
