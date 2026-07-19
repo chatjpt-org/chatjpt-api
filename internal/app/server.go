@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	cookieName      = "chatjpt_session"
-	maxRequestBytes = 1 << 20
-	defaultModel    = "qwen2.5:1.5b-instruct"
-	ssePaddingBytes = 2048
+	cookieName           = "chatjpt_session"
+	maxRequestBytes      = 1 << 20
+	defaultModel         = "qwen2.5:1.5b-instruct"
+	defaultChatMaxTokens = 1024
+	maxChatTokens        = 1024
+	ssePaddingBytes      = 2048
 )
 
 type Server struct {
@@ -61,11 +63,12 @@ type conversationResponse struct {
 }
 
 type messageResponse struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Model     string    `json:"model,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	Model      string    `json:"model,omitempty"`
+	Incomplete bool      `json:"incomplete,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type apiError struct {
@@ -152,6 +155,7 @@ type createMessageRequest struct {
 type streamEvent struct {
 	Delta        string `json:"delta,omitempty"`
 	FinishReason string `json:"finish_reason,omitempty"`
+	Incomplete   bool   `json:"incomplete,omitempty"`
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -344,11 +348,12 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	responses := make([]messageResponse, 0, len(messages))
 	for _, message := range messages {
 		responses = append(responses, messageResponse{
-			ID:        message.ID,
-			Role:      message.Role,
-			Content:   message.Content,
-			Model:     message.Model,
-			CreatedAt: message.CreatedAt,
+			ID:         message.ID,
+			Role:       message.Role,
+			Content:    message.Content,
+			Model:      message.Model,
+			Incomplete: message.Incomplete,
+			CreatedAt:  message.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": responses})
@@ -388,9 +393,9 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.MaxTokens == 0 {
-		request.MaxTokens = 512
+		request.MaxTokens = defaultChatMaxTokens
 	}
-	if request.MaxTokens < 1 || request.MaxTokens > 1024 {
+	if request.MaxTokens < 1 || request.MaxTokens > maxChatTokens {
 		writeError(w, http.StatusBadRequest, "max_tokens must be between 1 and 1024", "invalid_request")
 		return
 	}
@@ -443,6 +448,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 	var answer strings.Builder
+	finishReason := ""
 	err = s.gateway.Stream(r.Context(), gateway.ChatRequest{
 		Model:     request.Model,
 		Messages:  gatewayMessages,
@@ -450,23 +456,40 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 		UserID:    user.ID,
 	}, func(chunk gateway.Chunk) error {
 		answer.WriteString(chunk.Content)
+		if chunk.FinishReason != "" {
+			finishReason = chunk.FinishReason
+		}
 		if err := writeSSE(w, streamEvent{Delta: chunk.Content, FinishReason: chunk.FinishReason}); err != nil {
 			return err
 		}
 		flusher.Flush()
 		return nil
 	})
+	incomplete := finishReason == "length"
 	if err != nil {
-		s.logger.Warn("gateway generation failed", "error", err)
-		_ = writeSSE(w, streamErrorEvent(err))
-		flusher.Flush()
-		return
+		if answer.Len() == 0 {
+			s.logger.Warn("gateway generation failed", "error", err)
+			_ = writeSSE(w, streamErrorEvent(err))
+			flusher.Flush()
+			return
+		}
+		incomplete = true
+		if finishReason == "" {
+			finishReason = "interrupted"
+		}
+		s.logger.Warn("gateway generation interrupted after partial response", "error", err)
 	}
-	if _, err := s.store.CreateMessage(r.Context(), user.ID, conversationID, "assistant", answer.String(), request.Model); err != nil {
+
+	persistContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := s.store.CreateAssistantMessage(persistContext, user.ID, conversationID, answer.String(), request.Model, incomplete); err != nil {
 		s.logger.Error("persist assistant message", "error", err)
 		_ = writeSSE(w, apiError{Error: errorBody{Message: "could not save assistant response", Code: "server_error"}})
 		flusher.Flush()
 		return
+	}
+	if incomplete {
+		_ = writeSSE(w, streamEvent{FinishReason: finishReason, Incomplete: true})
 	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
@@ -525,6 +548,16 @@ func containsModel(models []gateway.Model, modelID string) bool {
 }
 
 func streamErrorEvent(err error) apiError {
+	var streamError *gateway.StreamError
+	if errors.As(err, &streamError) {
+		switch streamError.Code {
+		case "timeout_error":
+			return apiError{Error: errorBody{Message: "the AI model reached its generation time limit", Code: "generation_timeout"}}
+		case "request_cancelled":
+			return apiError{Error: errorBody{Message: "the AI generation was interrupted", Code: "generation_interrupted"}}
+		}
+	}
+
 	var responseError *gateway.ResponseError
 	if errors.As(err, &responseError) {
 		switch responseError.StatusCode {

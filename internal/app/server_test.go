@@ -27,6 +27,10 @@ func TestStreamErrorEvent(t *testing.T) {
 			code: "gateway_unavailable",
 		},
 		{
+			name: "gateway stream timeout",
+			err:  &gateway.StreamError{Code: "timeout_error"},
+			code: "generation_timeout",
+		}, {
 			name: "unexpected error",
 			err:  errors.New("connection closed"),
 			code: "gateway_error",

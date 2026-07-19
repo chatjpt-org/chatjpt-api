@@ -80,14 +80,14 @@ func TestStoreIntegration(t *testing.T) {
 	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "user", "hello", ""); err != nil {
 		t.Fatalf("CreateMessage(user) error = %v", err)
 	}
-	if _, err := store.CreateMessage(ctx, firstUser.ID, conversation.ID, "assistant", "hello back", "qwen2.5:1.5b-instruct"); err != nil {
+	if _, err := store.CreateAssistantMessage(ctx, firstUser.ID, conversation.ID, "hello back", "qwen2.5:1.5b-instruct", true); err != nil {
 		t.Fatalf("CreateMessage(assistant) error = %v", err)
 	}
 	messages, err := store.ListMessages(ctx, firstUser.ID, conversation.ID)
 	if err != nil {
 		t.Fatalf("ListMessages() error = %v", err)
 	}
-	if len(messages) != 2 || messages[0].Content != "hello" || messages[1].Content != "hello back" {
+	if len(messages) != 2 || messages[0].Content != "hello" || messages[1].Content != "hello back" || !messages[1].Incomplete {
 		t.Fatalf("messages = %#v", messages)
 	}
 

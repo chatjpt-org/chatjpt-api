@@ -35,10 +35,8 @@ Nao existe cadastro publico. O administrador cria usuarios pelo comando
 | `GET` | `/v1/conversations/{id}/messages` | Lista mensagens de uma conversa. |
 | `POST` | `/v1/conversations/{id}/messages` | Persiste a mensagem do usuario e transmite a resposta em SSE. |
 
-O corpo do endpoint de mensagens aceita `content` e `max_tokens` (de 1 a
-1024; padrao 512), alem de `model` opcional. Quando ausente, usa o primeiro
-modelo configurado. Cada evento SSE tem `delta` e, no ultimo evento, pode ter
-`finish_reason`. Ao encerrar com sucesso, a API envia `data: [DONE]`.
+O corpo do endpoint de mensagens aceita `content` e `max_tokens` (de 1 a 1024; padrao 1024), alem de `model` opcional. Quando ausente, usa o primeiro
+modelo configurado. Cada evento SSE tem `delta` e, no ultimo evento, pode ter `finish_reason` e `incomplete`. Quando `incomplete` e verdadeiro, a resposta parcial foi salva. Ao encerrar com sucesso, a API envia `data: [DONE]`.
 
 Em indisponibilidade do modelo, o stream envia `data: {"error": ...}` com os
 codigos `model_busy`, `gateway_unavailable` ou `gateway_error`.
