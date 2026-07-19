@@ -80,3 +80,25 @@ func TestModelAccessRestrictsAdminModels(t *testing.T) {
 		t.Error("admin should be allowed to use the admin model")
 	}
 }
+func TestModelAccessRespectsPersistedVisibility(t *testing.T) {
+	access := newModelAccess(
+		[]string{"qwen2.5:1.5b-instruct"},
+		[]string{"qwen3:4b-instruct"},
+	)
+	member := store.User{Role: store.RoleMember}
+	admin := store.User{Role: store.RoleAdmin}
+	visibility := map[string]bool{
+		"qwen2.5:1.5b-instruct": false,
+		"qwen3:4b-instruct":     true,
+	}
+
+	if access.allowsWithVisibility(member, "qwen2.5:1.5b-instruct", visibility) {
+		t.Error("member should not be allowed after the default model is locked")
+	}
+	if !access.allowsWithVisibility(member, "qwen3:4b-instruct", visibility) {
+		t.Error("member should be allowed after an admin makes a model public")
+	}
+	if !access.allowsWithVisibility(admin, "qwen2.5:1.5b-instruct", visibility) {
+		t.Error("admin should keep access to locked models")
+	}
+}

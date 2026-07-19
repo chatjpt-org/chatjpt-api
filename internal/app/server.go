@@ -45,6 +45,30 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type registerRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type createAdminRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type updateUserRoleRequest struct {
+	Role string `json:"role"`
+}
+
+type updateModelVisibilityRequest struct {
+	IsPublic bool `json:"is_public"`
+}
+
+type adminModelResponse struct {
+	ID       string `json:"id"`
+	Object   string `json:"object"`
+	OwnedBy  string `json:"owned_by"`
+	IsPublic bool   `json:"is_public"`
+}
 type userResponse struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
@@ -120,11 +144,19 @@ func (s *Server) routes() http.Handler {
 	router.Use(securityHeaders)
 	router.Get("/healthz", s.health)
 	router.Route("/v1/auth", func(router chi.Router) {
+		router.Post("/register", s.register)
 		router.Post("/login", s.login)
 		router.Post("/logout", s.logout)
 		router.Get("/session", s.session)
 	})
 	router.Get("/v1/models", s.listModels)
+	router.Route("/v1/admin", func(router chi.Router) {
+		router.Get("/models", s.listAdminModels)
+		router.Put("/models/{modelID}", s.updateModelVisibility)
+		router.Get("/users", s.listUsers)
+		router.Post("/users", s.createAdminUser)
+		router.Patch("/users/{username}/role", s.updateUserRole)
+	})
 	router.Route("/v1/conversations", func(router chi.Router) {
 		router.Get("/", s.listConversations)
 		router.Post("/", s.createConversation)
@@ -203,21 +235,58 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.loginLimiter.reset(loginKey)
 
+	if !s.writeSession(w, r, user) {
+		return
+	}
+}
+
+func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	var request registerRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	request.Username = strings.TrimSpace(request.Username)
+	if err := auth.ValidateUsername(request.Username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	passwordHash, err := auth.HashPassword(request.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	if err := s.store.CreateUser(r.Context(), request.Username, passwordHash); err != nil {
+		s.logger.Info("public registration rejected", "username", request.Username, "error", err)
+		writeError(w, http.StatusConflict, "username is unavailable", "username_unavailable")
+		return
+	}
+	user, _, err := s.store.FindUserByUsername(r.Context(), request.Username)
+	if err != nil {
+		s.logger.Error("load registered user", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not create account", "server_error")
+		return
+	}
+	if !s.writeSession(w, r, user) {
+		return
+	}
+}
+
+func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, user store.User) bool {
 	token, tokenHash, err := auth.NewSessionToken()
 	if err != nil {
 		s.logger.Error("create session token", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not create session", "server_error")
-		return
+		return false
 	}
 	expiresAt := time.Now().Add(s.config.SessionDuration)
 	if err := s.store.CreateSession(r.Context(), user.ID, tokenHash, expiresAt); err != nil {
 		s.logger.Error("persist session", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not create session", "server_error")
-		return
+		return false
 	}
-
 	http.SetCookie(w, sessionCookie(token, s.config.CookieSecure, s.config.SessionDuration))
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
+	return true
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +311,162 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
 }
 
+func (s *Server) listAdminModels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticatedAdmin(w, r); !ok {
+		return
+	}
+	if s.gateway == nil {
+		writeError(w, http.StatusServiceUnavailable, "AI gateway is not configured", "service_unavailable")
+		return
+	}
+	models, err := s.gateway.Models(r.Context())
+	if err != nil {
+		s.logger.Warn("list admin gateway models", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
+		return
+	}
+	visibility, err := s.store.ListModelVisibility(r.Context())
+	if err != nil {
+		s.logger.Error("list model visibility", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list model visibility", "server_error")
+		return
+	}
+	response := make([]adminModelResponse, 0, len(models))
+	for _, model := range models {
+		response = append(response, adminModelResponse{
+			ID:       model.ID,
+			Object:   model.Object,
+			OwnedBy:  model.OwnedBy,
+			IsPublic: s.modelAccess.isPublic(model.ID, visibility),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": response})
+}
+
+func (s *Server) updateModelVisibility(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticatedAdmin(w, r); !ok {
+		return
+	}
+	modelID := strings.TrimSpace(chi.URLParam(r, "modelID"))
+	if modelID == "" {
+		writeError(w, http.StatusBadRequest, "model ID is required", "invalid_request")
+		return
+	}
+	var request updateModelVisibilityRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	if s.gateway == nil {
+		writeError(w, http.StatusServiceUnavailable, "AI gateway is not configured", "service_unavailable")
+		return
+	}
+	models, err := s.gateway.Models(r.Context())
+	if err != nil {
+		s.logger.Warn("list gateway models before update", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "the AI model catalog is temporarily unavailable", "gateway_unavailable")
+		return
+	}
+	if !containsModel(models, modelID) {
+		writeError(w, http.StatusNotFound, "model not found in the gateway catalog", "not_found")
+		return
+	}
+	if err := s.store.SetModelVisibility(r.Context(), modelID, request.IsPublic); err != nil {
+		s.logger.Error("set model visibility", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not update model visibility", "server_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, adminModelResponse{ID: modelID, IsPublic: request.IsPublic})
+}
+
+func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticatedAdmin(w, r); !ok {
+		return
+	}
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		s.logger.Error("list users", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list users", "server_error")
+		return
+	}
+	response := make([]userResponse, 0, len(users))
+	for _, user := range users {
+		response = append(response, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": response})
+}
+
+func (s *Server) createAdminUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticatedAdmin(w, r); !ok {
+		return
+	}
+	var request createAdminRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	request.Username = strings.TrimSpace(request.Username)
+	if err := auth.ValidateUsername(request.Username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	passwordHash, err := auth.HashPassword(request.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	if err := s.store.CreateUserWithRole(r.Context(), request.Username, passwordHash, store.RoleAdmin); err != nil {
+		s.logger.Info("admin account creation rejected", "username", request.Username, "error", err)
+		writeError(w, http.StatusConflict, "username is unavailable", "username_unavailable")
+		return
+	}
+	user, _, err := s.store.FindUserByUsername(r.Context(), request.Username)
+	if err != nil {
+		s.logger.Error("load created admin", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not create administrator", "server_error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: string(user.Role)})
+}
+
+func (s *Server) updateUserRole(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.authenticatedAdmin(w, r)
+	if !ok {
+		return
+	}
+	username := strings.TrimSpace(chi.URLParam(r, "username"))
+	if err := auth.ValidateUsername(username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	var request updateUserRoleRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	role, err := store.ParseUserRole(request.Role)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	target, _, err := s.store.FindUserByUsername(r.Context(), username)
+	if err != nil {
+		if store.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "user not found", "not_found")
+			return
+		}
+		s.logger.Error("find user for role update", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not update user role", "server_error")
+		return
+	}
+	if target.ID == admin.ID {
+		writeError(w, http.StatusBadRequest, "administrators cannot change their own role", "invalid_request")
+		return
+	}
+	if err := s.store.SetUserRole(r.Context(), username, role); err != nil {
+		s.logger.Error("set user role", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not update user role", "server_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, userResponse{ID: target.ID, Username: target.Username, Role: string(role)})
+}
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.authenticatedUser(w, r)
 	if !ok {
@@ -403,7 +628,13 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request) {
 	if request.Model == "" {
 		request.Model = s.modelAccess.defaultModel
 	}
-	if !s.modelAccess.allows(user, request.Model) {
+	allowed, err := s.allowsModel(r.Context(), user, request.Model)
+	if err != nil {
+		s.logger.Error("load model visibility", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not check model access", "server_error")
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusBadRequest, "requested model is not allowed", "model_not_allowed")
 		return
 	}
@@ -499,17 +730,29 @@ func (s *Server) availableModels(ctx context.Context, user store.User) ([]gatewa
 	if s.gateway == nil {
 		return nil, errors.New("AI gateway is not configured")
 	}
+	visibility, err := s.store.ListModelVisibility(ctx)
+	if err != nil {
+		return nil, err
+	}
 	models, err := s.gateway.Models(ctx)
 	if err != nil {
 		return nil, err
 	}
 	available := make([]gateway.Model, 0, len(models))
 	for _, model := range models {
-		if s.modelAccess.allows(user, model.ID) {
+		if s.modelAccess.allowsWithVisibility(user, model.ID, visibility) {
 			available = append(available, model)
 		}
 	}
 	return available, nil
+}
+
+func (s *Server) allowsModel(ctx context.Context, user store.User, modelID string) (bool, error) {
+	visibility, err := s.store.ListModelVisibility(ctx)
+	if err != nil {
+		return false, err
+	}
+	return s.modelAccess.allowsWithVisibility(user, modelID, visibility), nil
 }
 
 func newModelAccess(memberModels, adminModels []string) modelAccess {
@@ -527,6 +770,19 @@ func newModelAccess(memberModels, adminModels []string) modelAccess {
 	return access
 }
 
+func (a modelAccess) isPublic(model string, visibility map[string]bool) bool {
+	if isPublic, configured := visibility[model]; configured {
+		return isPublic
+	}
+	_, allowed := a.memberModels[model]
+	return allowed
+}
+func (a modelAccess) allowsWithVisibility(user store.User, model string, visibility map[string]bool) bool {
+	if user.Role == store.RoleAdmin {
+		return true
+	}
+	return a.isPublic(model, visibility)
+}
 func (a modelAccess) allows(user store.User, model string) bool {
 	if _, allowed := a.memberModels[model]; allowed {
 		return true
@@ -588,6 +844,17 @@ func (s *Server) authenticatedUser(w http.ResponseWriter, r *http.Request) (stor
 	return user, true
 }
 
+func (s *Server) authenticatedAdmin(w http.ResponseWriter, r *http.Request) (store.User, bool) {
+	user, ok := s.authenticatedUser(w, r)
+	if !ok {
+		return store.User{}, false
+	}
+	if user.Role != store.RoleAdmin {
+		writeError(w, http.StatusForbidden, "administrator access is required", "forbidden")
+		return store.User{}, false
+	}
+	return user, true
+}
 func (s *Server) authenticatedConversation(w http.ResponseWriter, r *http.Request) (store.User, string, bool) {
 	user, ok := s.authenticatedUser(w, r)
 	if !ok {
