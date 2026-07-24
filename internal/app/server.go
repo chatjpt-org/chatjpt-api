@@ -157,6 +157,7 @@ func (s *Server) routes() http.Handler {
 		router.Get("/users", s.listUsers)
 		router.Post("/users", s.createAdminUser)
 		router.Patch("/users/{username}/role", s.updateUserRole)
+		router.Delete("/users/{username}", s.deleteUser)
 	})
 	router.Route("/v1/conversations", func(router chi.Router) {
 		router.Get("/", s.listConversations)
@@ -467,6 +468,38 @@ func (s *Server) updateUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, userResponse{ID: target.ID, Username: target.Username, Role: string(role)})
+}
+
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	admin, ok := s.authenticatedAdmin(w, r)
+	if !ok {
+		return
+	}
+	username := strings.TrimSpace(chi.URLParam(r, "username"))
+	if err := auth.ValidateUsername(username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		return
+	}
+	target, _, err := s.store.FindUserByUsername(r.Context(), username)
+	if err != nil {
+		if store.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "user not found", "not_found")
+			return
+		}
+		s.logger.Error("find user for deletion", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not delete user", "server_error")
+		return
+	}
+	if target.ID == admin.ID {
+		writeError(w, http.StatusBadRequest, "administrators cannot delete their own account", "invalid_request")
+		return
+	}
+	if err := s.store.DeleteUser(r.Context(), username); err != nil {
+		s.logger.Error("delete user", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not delete user", "server_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.authenticatedUser(w, r)
