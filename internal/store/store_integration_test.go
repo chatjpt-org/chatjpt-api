@@ -116,4 +116,22 @@ func TestStoreIntegration(t *testing.T) {
 	if _, err := store.FindUserBySession(ctx, expiredHash); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("FindUserBySession(expired) error = %v, want not found", err)
 	}
+
+	if err := store.DeleteUser(ctx, secondUsername); err != nil {
+		t.Fatalf("DeleteUser(second) error = %v", err)
+	}
+	if _, _, err := store.FindUserByUsername(ctx, secondUsername); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("FindUserByUsername(deleted) error = %v, want not found", err)
+	}
+	if err := store.DeleteUser(ctx, secondUsername); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("DeleteUser(missing) error = %v, want not found", err)
+	}
+
+	// Remover o dono deve apagar em cascata as conversas e mensagens dele.
+	if err := store.DeleteUser(ctx, firstUsername); err != nil {
+		t.Fatalf("DeleteUser(first) error = %v", err)
+	}
+	if _, err := store.FindConversation(ctx, firstUser.ID, conversation.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("FindConversation(after user delete) error = %v, want not found", err)
+	}
 }
