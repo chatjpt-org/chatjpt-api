@@ -137,6 +137,17 @@ func (s *Store) SetUserRole(ctx context.Context, username string, role UserRole)
 	return nil
 }
 
+func (s *Store) DeleteUser(ctx context.Context, username string) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM users WHERE username = $1`, username)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) FindUserByUsername(ctx context.Context, username string) (User, string, error) {
 	var user User
 	var passwordHash string
